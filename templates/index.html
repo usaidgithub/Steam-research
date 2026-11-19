@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rigzer | Steam Game Research</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-slate-50 text-slate-900 font-sans antialiased">
+    <header class="bg-white border-b border-slate-200 px-[6%] py-5">
+        <h1 class="text-xl font-bold text-slate-700 tracking-tight">STEAM RESEARCH</h1>
+        <p class="text-sm text-slate-500 mt-1">Game intelligence and developer discovery dashboard</p>
+    </header>
+
+    <main class="max-w-[1360px] mx-auto my-7 px-5">
+        <div class="flex justify-end mb-3">
+            <button id="bookmarkedButton" type="button"
+                class="bg-white hover:bg-teal-50 border border-teal-200 text-teal-800 font-semibold text-sm px-4 py-2 rounded-lg transition cursor-pointer">
+                ★ Bookmarked Games
+            </button>
+        </div>
+        <div class="flex flex-col sm:flex-row gap-3 bg-white border border-slate-200 p-4 rounded-xl shadow-sm">
+            <input id="appInput" type="text" aria-label="Steam App ID or Store URL"
+                placeholder="Enter, paste, or drag & drop a Steam Store URL or App ID..."
+                class="flex-1 min-w-0 px-3.5 py-3 rounded-lg border border-slate-300 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-transparent">
+            <button id="searchButton" onclick="handleSearch()"
+                class="bg-teal-700 hover:bg-teal-800 disabled:opacity-50 disabled:cursor-wait text-white font-semibold text-sm px-5 py-3 rounded-lg transition cursor-pointer shrink-0">
+                Add Game
+            </button>
+        </div>
+
+        <div id="status" role="status" aria-live="polite" class="my-3.5 text-sm font-medium text-teal-700"></div>
+        <div id="errorContainer"></div>
+        <div id="results"></div>
+    </main>
+
+    <script src="{{ url_for('static', filename='formatters.js') }}"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+
+</html>
