@@ -2,6 +2,7 @@ import logging
 
 import requests
 from flask import Flask, jsonify, render_template, request
+from concurrent.futures import ThreadPoolExecutor
 
 from config import COUNTRY_CODE
 from services import (
@@ -26,6 +27,11 @@ app = Flask(__name__)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+try:
+    initialize_database()
+except Exception:
+    logger.exception("Database initialization failed during startup")
 
 def prepare_bookmark_document(game_data):
     """
@@ -69,6 +75,137 @@ def index():
 
 
 @app.route("/api/game", methods=["GET"])
+def get_game():
+    raw_input = request.args.get("app_id", "")
+
+    try:
+        app_id = normalize_app_id(raw_input)
+    except ValueError as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
+
+    logger.info("Fetching Steam data for App ID %s", app_id)
+
+    errors = []
+
+    fetchers = {
+        "Steam Store": (
+            fetch_store_data,
+            (requests.RequestException, ValueError, TypeError),
+        ),
+        "Steam Web API": (
+            fetch_current_players,
+            (requests.RequestException, ValueError, TypeError),
+        ),
+        "Steam Reviews API": (
+            fetch_reviews_data,
+            (requests.RequestException, ValueError, TypeError, KeyError),
+        ),
+        "SteamSpy": (
+            fetch_steamspy_data,
+            (requests.RequestException, ValueError, TypeError, KeyError),
+        ),
+        "Steam Page Analyzer": (
+            fetch_steam_page_analyzer_data,
+            (requests.RequestException, ValueError, TypeError, KeyError),
+        ),
+    }
+
+    results = {}
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_map = {
+            executor.submit(fn, app_id): (source, handled_excs)
+            for source, (fn, handled_excs) in fetchers.items()
+        }
+
+        for future, (source, handled_excs) in future_map.items():
+            try:
+                results[source] = future.result()
+            except handled_excs as exc:
+                logger.exception("%s request/processing failed", source)
+                results[source] = None
+                errors.append({
+                    "source": source,
+                    "message": str(exc),
+                })
+
+    store_data = results.get("Steam Store")
+    player_data = results.get("Steam Web API")
+    reviews_data = results.get("Steam Reviews API")
+    steamspy_data = results.get("SteamSpy")
+    steam_page_analyzer_data = results.get("Steam Page Analyzer")
+
+    store_available = (
+        store_data is not None
+        and store_data.get("available") is True
+    )
+    players_available = (
+        player_data is not None
+        and player_data.get("available") is True
+    )
+    reviews_available = (
+        reviews_data is not None
+        and reviews_data.get("available") is True
+    )
+    steamspy_available = (
+        steamspy_data is not None
+        and steamspy_data.get("available") is True
+    )
+    steam_page_analyzer_available = (
+        steam_page_analyzer_data is not None
+        and steam_page_analyzer_data.get("available") is True
+    )
+
+    if not (
+        store_available
+        or players_available
+        or reviews_available
+        or steamspy_available
+        or steam_page_analyzer_available
+    ):
+        return jsonify({
+            "success": False,
+            "app_id": app_id,
+            "errors": errors,
+            "error": (
+                "Unable to retrieve game information from Steam. "
+                "The App ID may be unsupported, or the Steam services "
+                "may be temporarily unavailable."
+            ),
+        }), 502
+
+    currency = None
+    if store_available:
+        currency = (store_data.get("price") or {}).get("currency")
+
+    return jsonify({
+        "success": True,
+        "app_id": app_id,
+        "steam_store": store_data,
+        "steam_players": player_data,
+        "steam_reviews": reviews_data,
+        "steamspy": steamspy_data,
+        "steam_page_analyzer": steam_page_analyzer_data,
+        "errors": errors,
+        "metadata": {
+            "country": COUNTRY_CODE.upper(),
+            "currency": currency,
+            "sources": [
+                source
+                for source, available in [
+                    ("Steam Store", store_available),
+                    ("Steam Web API", players_available),
+                    ("Steam Reviews API", reviews_available),
+                    ("SteamSpy", steamspy_available),
+                    ("Steam Page Analyzer", steam_page_analyzer_available),
+                ]
+                if available
+            ],
+        },
+    })
 def get_game():
     raw_input = request.args.get("app_id", "")
 
