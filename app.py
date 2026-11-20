@@ -21,6 +21,7 @@ from pymongo.errors import PyMongoError
 from database import (
     initialize_database,
     get_bookmarked_games_collection,
+    get_searched_games_collection,
 )
 
 app = Flask(__name__)
@@ -68,6 +69,43 @@ def prepare_bookmark_document(game_data):
         "metadata": game_data.get("metadata", {}),
         "errors": game_data.get("errors", []),
     }
+
+
+def prepare_searched_game_document(game_data):
+    """
+    Prepare a successful game research response
+    for the shared searched_games collection.
+    """
+
+    app_id = normalize_app_id(
+        str(game_data.get("app_id", ""))
+    )
+
+    steam_store = game_data.get("steam_store")
+    steam_store = (
+        steam_store if isinstance(steam_store, dict) else None
+    )
+
+    game_name = (
+        (steam_store or {}).get("name")
+        or game_data.get("game_name")
+        or f"Steam App {app_id}"
+    )
+
+    return {
+        "app_id": app_id,
+        "game_name": game_name,
+        "steam_store": game_data.get("steam_store"),
+        "steam_players": game_data.get("steam_players"),
+        "steam_reviews": game_data.get("steam_reviews"),
+        "steamspy": game_data.get("steamspy"),
+        "steam_page_analyzer": game_data.get(
+            "steam_page_analyzer"
+        ),
+        "metadata": game_data.get("metadata", {}),
+        "errors": game_data.get("errors", []),
+    }
+
 
 @app.route("/")
 def index():
@@ -124,12 +162,33 @@ def get_game():
         for future, (source, handled_excs) in future_map.items():
             try:
                 results[source] = future.result()
+
             except handled_excs as exc:
-                logger.exception("%s request/processing failed", source)
+                logger.exception(
+                    "%s request/processing failed for app_id=%s",
+                    source,
+                    app_id,
+                )
+
                 results[source] = None
+
                 errors.append({
                     "source": source,
                     "message": str(exc),
+                })
+
+            except Exception as exc:
+                logger.exception(
+                    "Unexpected error from %s for app_id=%s",
+                    source,
+                    app_id,
+                )
+
+                results[source] = None
+
+                errors.append({
+                    "source": source,
+                    "message": f"{source} encountered an unexpected error.",
                 })
 
     store_data = results.get("Steam Store")
@@ -181,7 +240,8 @@ def get_game():
     if store_available:
         currency = (store_data.get("price") or {}).get("currency")
 
-    return jsonify({
+    
+    response_data = {
         "success": True,
         "app_id": app_id,
         "steam_store": store_data,
@@ -205,204 +265,42 @@ def get_game():
                 if available
             ],
         },
-    })
-def get_game():
-    raw_input = request.args.get("app_id", "")
+    }
 
+    # Automatically save successful searches to shared MongoDB history.
     try:
-        app_id = normalize_app_id(raw_input)
+        document = prepare_searched_game_document(response_data)
+        now = datetime.now(timezone.utc)
 
-    except ValueError as exc:
-        return jsonify({
-            "success": False,
-            "error": str(exc),
-        }), 400
+        collection = get_searched_games_collection()
 
-    logger.info("Fetching Steam data for App ID %s", app_id)
-
-    store_data = None
-    player_data = None
-    reviews_data = None
-    steamspy_data = None
-    steam_page_analyzer_data = None
-    errors = []
-
-    try:
-        store_data = fetch_store_data(app_id)
-
-    except requests.RequestException as exc:
-        logger.exception("Steam Store request failed")
-
-        errors.append({
-            "source": "Steam Store",
-            "message": str(exc),
-        })
-
-    except (ValueError, TypeError) as exc:
-        logger.exception("Steam Store response could not be processed")
-
-        errors.append({
-            "source": "Steam Store",
-            "message": str(exc),
-        })
-
-    try:
-        player_data = fetch_current_players(app_id)
-
-    except requests.RequestException as exc:
-        logger.exception("Steam player API request failed")
-
-        errors.append({
-            "source": "Steam Web API",
-            "message": str(exc),
-        })
-
-    except (ValueError, TypeError) as exc:
-        logger.exception("Steam player API response could not be processed")
-
-        errors.append({
-            "source": "Steam Web API",
-            "message": str(exc),
-        })
-
-    try:
-        reviews_data = fetch_reviews_data(app_id)
-
-    except requests.RequestException as exc:
-        logger.exception("Steam Reviews API request failed")
-
-        errors.append({
-            "source": "Steam Reviews API",
-            "message": str(exc),
-        })
-
-    except (ValueError, TypeError, KeyError) as exc:
-        logger.exception("Steam Reviews API response could not be processed")
-
-        errors.append({
-            "source": "Steam Reviews API",
-            "message": str(exc),
-        })
-
-    try:
-        steamspy_data = fetch_steamspy_data(app_id)
-
-    except requests.RequestException as exc:
-        logger.exception("SteamSpy request failed")
-
-        errors.append({
-            "source": "SteamSpy",
-            "message": str(exc),
-        })
-
-    except (ValueError, TypeError, KeyError) as exc:
-        logger.exception("SteamSpy response could not be processed")
-
-        errors.append({
-            "source": "SteamSpy",
-            "message": str(exc),
-        })
-
-    try:
-        steam_page_analyzer_data = (
-            fetch_steam_page_analyzer_data(app_id)
+        collection.find_one_and_update(
+            {"app_id": document["app_id"]},
+            {
+                "$set": {
+                    **document,
+                    "last_searched_at": now,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "first_searched_at": now,
+                },
+                "$inc": {
+                    "search_count": 1,
+                },
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
         )
 
-    except requests.RequestException as exc:
+    except (ValueError, PyMongoError, RuntimeError):
         logger.exception(
-            "Steam Page Analyzer request failed"
+            "Could not save searched game %s to MongoDB",
+            app_id,
         )
 
-        errors.append({
-            "source": "Steam Page Analyzer",
-            "message": str(exc),
-        })
+    return jsonify(response_data)
 
-    except (ValueError, TypeError, KeyError) as exc:
-        logger.exception(
-            "Steam Page Analyzer response could not be processed"
-        )
-
-        errors.append({
-            "source": "Steam Page Analyzer",
-            "message": str(exc),
-        })
-
-    store_available = (
-        store_data is not None
-        and store_data.get("available") is True
-    )
-
-    players_available = (
-        player_data is not None
-        and player_data.get("available") is True
-    )
-
-    reviews_available = (
-        reviews_data is not None
-        and reviews_data.get("available") is True
-    )
-
-    steamspy_available = (
-        steamspy_data is not None
-        and steamspy_data.get("available") is True
-    )
-
-    steam_page_analyzer_available = (
-        steam_page_analyzer_data is not None
-        and steam_page_analyzer_data.get("available") is True
-    )
-
-    if not (
-        store_available
-        or players_available
-        or reviews_available
-        or steamspy_available
-        or steam_page_analyzer_available
-    ):
-        return jsonify({
-            "success": False,
-            "app_id": app_id,
-            "errors": errors,
-            "error": (
-                "Unable to retrieve game information from Steam. "
-                "The App ID may be unsupported, or the Steam services "
-                "may be temporarily unavailable."
-            ),
-        }), 502
-
-    currency = None
-
-    if store_available:
-        currency = (
-            (store_data.get("price") or {}).get("currency")
-        )
-
-    return jsonify({
-        "success": True,
-        "app_id": app_id,
-        "steam_store": store_data,
-        "steam_players": player_data,
-        "steam_reviews": reviews_data,
-        "steamspy": steamspy_data,
-        "steam_page_analyzer": steam_page_analyzer_data,
-        "errors": errors,
-        "metadata": {
-            "country": COUNTRY_CODE.upper(),
-            "currency": currency,
-            "sources": [
-                source
-                for source, available in [
-                    ("Steam Store", store_available),
-                    ("Steam Web API", players_available),
-                    ("Steam Reviews API", reviews_available),
-                    ("SteamSpy", steamspy_available),
-                    ("Steam Page Analyzer", steam_page_analyzer_available),
-                ]
-                if available
-            ],
-        },
-    })
 
 @app.route("/api/bookmarks", methods=["POST"])
 def bookmark_game():
@@ -473,6 +371,52 @@ def bookmark_game():
             "success": False,
             "error": "Unable to save the game to MongoDB.",
         }), 500
+
+
+@app.route("/api/searched-games", methods=["GET"])
+def get_searched_games():
+
+    try:
+        collection = get_searched_games_collection()
+
+        games = list(
+            collection.find(
+                {},
+                {"_id": 0},
+            ).sort("last_searched_at", -1)
+        )
+
+        for game in games:
+            for field in [
+                "first_searched_at",
+                "last_searched_at",
+                "updated_at",
+            ]:
+                if game.get(field):
+                    game[field] = game[field].isoformat()
+
+        return jsonify({
+            "success": True,
+            "count": len(games),
+            "games": games,
+        })
+
+    except PyMongoError:
+        logger.exception("Failed to retrieve searched games")
+
+        return jsonify({
+            "success": False,
+            "error": "Unable to retrieve searched games.",
+        }), 500
+
+    except RuntimeError:
+        logger.exception("Searched games collection is unavailable")
+
+        return jsonify({
+            "success": False,
+            "error": "Database is not initialized.",
+        }), 503
+
 
 @app.route("/api/bookmarks", methods=["GET"])
 def get_bookmarked_games():
@@ -550,8 +494,6 @@ def remove_bookmarked_game(app_id):
 
     
 if __name__ == "__main__":
-
-    initialize_database()
 
     app.run(
         host="127.0.0.1",

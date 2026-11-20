@@ -40,6 +40,7 @@ MONGODB_URI = os.getenv("MONGODB_URI")
 
 MONGODB_DATABASE = "rigzer_steam_research"
 MONGODB_COLLECTION = "bookmarked_games"
+MONGODB_SEARCHED_COLLECTION = "searched_games"
 
 session = requests.Session()
 session.headers.update(HEADERS)

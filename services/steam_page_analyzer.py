@@ -1,9 +1,12 @@
 import copy
+import logging
 import threading
 import time
+import requests
+
+logger = logging.getLogger(__name__)
 
 from config import (
-    REQUEST_TIMEOUT,
     STEAM_PAGE_ANALYZER_API,
     STEAM_PAGE_ANALYZER_CACHE_TTL,
     STEAM_PAGE_ANALYZER_MIN_REQUEST_INTERVAL,
@@ -83,17 +86,51 @@ def fetch_steam_page_analyzer_data(app_id):
         # also count towards the rate limit.
         analyzer_last_request = time.monotonic()
 
-        response = session.post(
-            STEAM_PAGE_ANALYZER_API,
-            json={
-                "app_id": str(cache_key),
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
+        try:
+            response = session.post(
+                STEAM_PAGE_ANALYZER_API,
+                json={
+                    "app_id": str(cache_key),
+                },
+                timeout=(5, 35),
+            )
 
-    response.raise_for_status()
+            response.raise_for_status()
+            payload = response.json()
 
-    payload = response.json()
+        except requests.exceptions.Timeout:
+            logger.warning(
+                "Steam Page Analyzer timed out for app_id=%s",
+                cache_key,
+            )
+
+            return {
+                "available": False,
+                "reason": "Steam Page Analyzer timed out. Other game data may still be available.",
+            }
+
+        except requests.exceptions.RequestException as exc:
+            logger.warning(
+                "Steam Page Analyzer request failed for app_id=%s: %s",
+                cache_key,
+                exc,
+            )
+
+            return {
+                "available": False,
+                "reason": "Steam Page Analyzer is temporarily unavailable.",
+            }
+
+        except ValueError:
+            logger.warning(
+                "Steam Page Analyzer returned invalid JSON for app_id=%s",
+                cache_key,
+            )
+
+            return {
+                "available": False,
+                "reason": "Steam Page Analyzer returned an invalid response.",
+            }
 
     if not isinstance(payload, dict):
         return {

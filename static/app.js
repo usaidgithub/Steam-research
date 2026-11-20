@@ -4,12 +4,19 @@ const errorEl = document.getElementById("errorContainer");
 const searchBtn = document.getElementById("searchButton");
 const inputEl = document.getElementById("appInput");
 
+// Shared searched games loaded from MongoDB.
 const gamesStore = new Map();
+
+// Shared bookmarked games loaded from MongoDB.
 const bookmarkedGamesStore = new Map();
 const bookmarkedIds = new Set();
 
 let activeDetailId = null;
 let currentView = "search";
+
+let searchedGamesLoaded = false;
+let searchedGamesLoadPromise = null;
+
 let bookmarksLoaded = false;
 let bookmarksLoading = false;
 
@@ -89,7 +96,10 @@ async function bookmarkGame(data) {
             headers: {
                 "Content-Type": "application/json"
             },
-            body: JSON.stringify(data)
+            body: JSON.stringify({
+                ...data,
+                success: true
+            })
         });
 
         const result = await response.json();
@@ -174,6 +184,63 @@ async function toggleBookmarkedView() {
 
     updateBookmarkNavigation();
     render();
+}
+
+
+async function loadSearchedGames(forceRefresh = false) {
+    // Avoid overlapping initial requests.
+    if (searchedGamesLoadPromise) {
+        await searchedGamesLoadPromise;
+
+        if (!forceRefresh && searchedGamesLoaded) {
+            return;
+        }
+    }
+
+    if (searchedGamesLoaded && !forceRefresh) {
+        return;
+    }
+
+    searchedGamesLoadPromise = (async () => {
+        try {
+            const response = await fetch("/api/searched-games");
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(
+                    result.error || "Unable to load searched games."
+                );
+            }
+
+            // Replace local data with the latest shared database records.
+            gamesStore.clear();
+
+            result.games.forEach(game => {
+                gamesStore.set(String(game.app_id), game);
+            });
+
+            searchedGamesLoaded = true;
+
+            statusEl.textContent =
+                `Loaded ${result.count} shared searched game${result.count === 1 ? "" : "s"}.`;
+
+        } catch (error) {
+            console.error("Searched games loading failed:", error);
+
+            statusEl.textContent =
+                `Could not load searched games: ${error.message}`;
+        }
+    })();
+
+    try {
+        await searchedGamesLoadPromise;
+    } finally {
+        searchedGamesLoadPromise = null;
+
+        if (currentView === "search" && !activeDetailId) {
+            render();
+        }
+    }
 }
 
 bookmarkedButton.addEventListener(
@@ -299,8 +366,8 @@ function buildSummaryRow(data) {
 
         actionWrap.appendChild(removeBookmarkBtn);
 
-    } else {
-
+    }
+    else {
         const bookmarkBtn = createEl(
             "button",
             bookmarkedIds.has(appId)
@@ -317,22 +384,8 @@ function buildSummaryRow(data) {
         };
 
         actionWrap.appendChild(bookmarkBtn);
-
-        const removeBtn = createEl(
-            "button",
-            "bg-white hover:bg-red-50 border border-red-200 text-red-600 font-medium text-xs px-2.5 py-1.5 rounded-md transition cursor-pointer",
-            "✕"
-        );
-
-        removeBtn.title = "Remove from search results";
-
-        removeBtn.onclick = () => {
-            gamesStore.delete(appId);
-            render();
-        };
-
-        actionWrap.appendChild(removeBtn);
     }
+
 
     tdActions.appendChild(actionWrap);
     tr.appendChild(tdActions);
@@ -513,6 +566,7 @@ function renderFullDetailsPage(data) {
 /* ================= MAIN VIEW SWITCHER & SEARCH ================= */
 
 
+
 function render() {
     resultsEl.innerHTML = "";
 
@@ -521,14 +575,13 @@ function render() {
             ? bookmarkedGamesStore
             : gamesStore;
 
-    // Full-page details view
+    // Full-page details view.
     if (activeDetailId && activeStore.has(activeDetailId)) {
-        renderFullDetailsPage(
-            activeStore.get(activeDetailId)
-        );
+        renderFullDetailsPage(activeStore.get(activeDetailId));
         return;
     }
 
+    // Empty state.
     if (!activeStore.size) {
         resultsEl.appendChild(
             createEl(
@@ -536,13 +589,14 @@ function render() {
                 "text-center py-10 px-5 text-slate-500 bg-white border border-dashed border-slate-300 rounded-xl text-sm",
                 currentView === "bookmarks"
                     ? "No bookmarked games yet. Search for games and bookmark the ones worth researching."
-                    : "No games added yet. Enter a Steam App ID or Store URL above."
+                    : "No searched games yet. Enter a Steam App ID or Store URL above."
             )
         );
 
         return;
     }
 
+    // Toolbar.
     const toolbar = createEl(
         "div",
         "flex justify-between items-center mb-3 text-sm text-slate-600"
@@ -554,30 +608,33 @@ function render() {
             "",
             currentView === "bookmarks"
                 ? `${bookmarkedGamesStore.size} bookmarked game${bookmarkedGamesStore.size === 1 ? "" : "s"}`
-                : `Showing ${gamesStore.size} game${gamesStore.size === 1 ? "" : "s"}`
+                : `${gamesStore.size} games in shared search history`
         )
     );
 
     if (currentView === "search") {
-        const clearBtn = createEl(
+        const refreshBtn = createEl(
             "button",
             "bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-medium text-xs px-3 py-1.5 rounded-md transition cursor-pointer",
-            "Clear All"
+            "↻ Refresh"
         );
 
-        clearBtn.onclick = () => {
-            gamesStore.clear();
-            activeDetailId = null;
-            statusEl.textContent = "";
-            errorEl.innerHTML = "";
-            render();
+        refreshBtn.onclick = async () => {
+            refreshBtn.disabled = true;
+            refreshBtn.textContent = "Loading...";
+
+            await loadSearchedGames(true);
+
+            refreshBtn.disabled = false;
+            refreshBtn.textContent = "↻ Refresh";
         };
 
-        toolbar.appendChild(clearBtn);
+        toolbar.appendChild(refreshBtn);
     }
 
     resultsEl.appendChild(toolbar);
 
+    // Table.
     const wrap = createEl(
         "div",
         "w-full overflow-x-auto bg-white border border-slate-200 rounded-xl shadow-sm"
@@ -589,6 +646,7 @@ function render() {
     );
 
     const thead = createEl("thead");
+
     const headRow = createEl(
         "tr",
         "bg-slate-100 border-b border-slate-200"
@@ -627,7 +685,6 @@ function render() {
     resultsEl.appendChild(wrap);
 }
 
-
 async function handleSearch() {
     const queries = inputEl.value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
     if (!queries.length) {
@@ -639,6 +696,10 @@ async function handleSearch() {
     currentView = "search";
     activeDetailId = null;
     updateBookmarkNavigation();
+
+    // Ensure existing shared records are loaded before searching.
+    await loadSearchedGames();
+
     searchBtn.disabled = true;
     errorEl.innerHTML = "";
     statusEl.textContent = `Fetching ${queries.length} game${queries.length > 1 ? "s" : ""}...`;
@@ -659,6 +720,11 @@ async function handleSearch() {
                 createEl("div", "text-red-700 bg-red-50 border border-red-200 p-3 rounded-lg mt-2.5 text-sm", `${q}: ${err.message}`)
             );
         }
+    }
+
+    // Synchronize the latest search history from MongoDB.
+    if (added > 0) {
+        await loadSearchedGames(true);
     }
 
     if (added > 0) {
@@ -777,8 +843,9 @@ inputEl.addEventListener("keydown", e => {
     if (e.key === "Enter") handleSearch();
 });
 
-// Load shared bookmarks when the dashboard starts.
+// Load both shared collections when the dashboard starts.
 loadBookmarkedGames();
+loadSearchedGames();
 
 updateBookmarkNavigation();
 
