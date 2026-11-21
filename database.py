@@ -48,6 +48,11 @@ def initialize_database():
         [("game_name", "text")],
     )
 
+    bookmarked_games.create_index([
+    ("release_date_sort", ASCENDING),
+    ("app_id", ASCENDING),
+    ])
+
     # New shared search history collection.
     searched_games = database[MONGODB_SEARCHED_COLLECTION]
 
@@ -61,6 +66,10 @@ def initialize_database():
     searched_games.create_index(
         [("game_name", "text")],
     )
+    searched_games.create_index([
+    ("last_searched_at", DESCENDING),
+    ("app_id", DESCENDING),
+    ])
 
     logger.info(
         "MongoDB connected successfully. "
